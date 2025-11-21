@@ -5,7 +5,7 @@ set -euo pipefail
 # Automatiza instalação/configuração conforme pedido:
 # - apt -y para todos os pacotes
 # - firewalld: libera 22,80,443,3306
-# - MariaDB: configura bind-address e parâmetros, cria root@'%' com senha jjl3m47c
+# - MariaDB: configura bind-address e parâmetros, opcionalmente cria root@'%' com senha informada interativamente
 # - Apache: adiciona ServerName detectando IP, ajusta dir.conf
 # Requer execução como root (sudo).
 
@@ -30,7 +30,6 @@ detect_public_ip() {
   local ip
   ip=$(curl -s --connect-timeout 2 "http://169.254.169.254/opc/v1/vnics/" 2>/dev/null || true)
   if [[ -n "$ip" ]]; then
-    # Tentativa simples: procurar por an IP-like na resposta
     ip=$(echo "$ip" | grep -Eo '([0-9]{1,3}\.){3}[0-9]{1,3}' | head -n1 || true)
     if [[ -n "$ip" ]]; then
       echo "$ip"
@@ -52,9 +51,22 @@ detect_public_ip() {
     return 0
   fi
 
-  # Se nada encontrado
   echo "0.0.0.0"
   return 0
+}
+
+# Função simples de prompt yes/no
+prompt_yes_no() {
+  local msg="$1"
+  local ans
+  while true; do
+    read -rp "$msg (y/n): " ans
+    case "$ans" in
+      [Yy]*) return 0 ;;
+      [Nn]*) return 1 ;;
+      *) echo "Resposta inválida. Digite y ou n." ;;
+    esac
+  done
 }
 
 # --- início ---
@@ -73,12 +85,7 @@ echo "[3/8] Instalando MariaDB"
 apt install -y mariadb-server
 
 echo "[4/8] Executando mysql_secure_installation automaticamente (interativo limitado)"
-# mysql_secure_installation é interativo; para manter segurança mínima,
-# vamos executar comandos equivalentes: set root password if not set, remove anonymous, disallow remote root via unix_socket removed later since user wants root@'%'
-# Observação: em algumas instalações, root usa auth_socket. Aqui vamos apenas run a versão simplificada.
 (
-  # tenta definir password para root@localhost se necessário (sem quebrar auth_socket)
-  # mas como vamos criar root@'%' com senha, isso é suficiente.
   mysql -u root <<'SQL' || true
 -- remove anonymous users
 DELETE FROM mysql.user WHERE User='';
@@ -93,11 +100,9 @@ echo "[5/8] Configurando arquivo MariaDB: /etc/mysql/mariadb.conf.d/50-server.cn
 CONF_FILE="/etc/mysql/mariadb.conf.d/50-server.cnf"
 backup_file "$CONF_FILE"
 
-# Garantir que bind-address existe e ajusta
 if grep -q "^bind-address" "$CONF_FILE" 2>/dev/null; then
   sed -i "s/^bind-address.*/bind-address = 0.0.0.0/" "$CONF_FILE"
 else
-  # adicionar após [mysqld] se existir
   if grep -q "^\[mysqld\]" "$CONF_FILE"; then
     awk 'BEGIN{added=0} {print} /^\[mysqld\]/{ if(!added){ print "bind-address = 0.0.0.0"; added=1 }}' "$CONF_FILE" > "${CONF_FILE}.tmp" && mv "${CONF_FILE}.tmp" "$CONF_FILE"
   else
@@ -105,14 +110,12 @@ else
   fi
 fi
 
-# Inserir/atualizar performance variables (replace if exist, otherwise append under [mysqld])
 replace_or_append_mysqld_option() {
   local key="$1"
   local val="$2"
   if grep -qE "^[[:space:]]*$key" "$CONF_FILE"; then
     sed -i "s#^[[:space:]]*$key.*#${key} = ${val}#" "$CONF_FILE"
   else
-    # append under [mysqld] or at end
     if grep -q "^\[mysqld\]" "$CONF_FILE"; then
       awk -v k="$key" -v v="$val" 'BEGIN{p=0} {print} /^\[mysqld\]/{p=1; next} END{ if(p==1) print k " = " v }' "$CONF_FILE" > "${CONF_FILE}.tmp" && mv "${CONF_FILE}.tmp" "$CONF_FILE"
     else
@@ -133,40 +136,61 @@ echo "Configuração MariaDB atualizada. Backup em ${CONF_FILE}.bak*"
 echo "[6/8] Reiniciando MariaDB"
 systemctl restart mariadb || systemctl restart mysql || true
 
-echo "[7/8] Criando/atualizando usuário root@'%' com senha especificada"
-ROOT_PWD="jjl3m47c"
-# Remover se existir e recriar, garantindo host '%'
-mysql -u root <<SQL
+# ====== ALTERAÇÃO SOLICITADA: NÃO GRAVAR SENHA NO SCRIPT ======
+echo "[7/8] Criar/atualizar usuário root@'%' para acesso remoto"
+if prompt_yes_no "Deseja criar/atualizar root@'%' agora e digitar a senha interativamente?"; then
+  # pede senha interativamente (não fica gravada no script)
+  read -rsp "Digite a senha para root@'%': " ROOT_PWD
+  echo
+  # Confirmação simples
+  if [[ -z "$ROOT_PWD" ]]; then
+    echo "Senha vazia. Pulando criação do usuário root@'%'."
+  else
+    mysql -u root <<SQL
 DROP USER IF EXISTS 'root'@'%';
 CREATE USER 'root'@'%' IDENTIFIED BY '${ROOT_PWD}';
 GRANT ALL PRIVILEGES ON *.* TO 'root'@'%' WITH GRANT OPTION;
 FLUSH PRIVILEGES;
--- adicionalmente, garantir permissões duplicadas conforme pedido
 GRANT ALL ON *.* TO 'root'@'%' IDENTIFIED BY '${ROOT_PWD}';
 GRANT ALL PRIVILEGES ON *.* TO 'root'@'%' IDENTIFIED BY '${ROOT_PWD}' WITH GRANT OPTION;
 FLUSH PRIVILEGES;
--- bloqueio de tabela (seguindo pedido de 'flush tables with read lock;')
+-- bloqueio e desbloqueio de tabelas conforme pedido
 FLUSH TABLES WITH READ LOCK;
 UNLOCK TABLES;
 SQL
+    echo "Usuário root@'%' criado/atualizado."
+  fi
+else
+  echo "Pulando criação do usuário root@'%'."
+  cat <<'INSTR'
+Se preferir criar manualmente depois, execute no MySQL:
+
+sudo mysql -u root -p
+-- no prompt mysql:
+CREATE USER 'root'@'%' IDENTIFIED BY 'SUA_SENHA_AQUI';
+GRANT ALL PRIVILEGES ON *.* TO 'root'@'%' WITH GRANT OPTION;
+FLUSH PRIVILEGES;
+-- opcionalmente:
+GRANT ALL ON *.* TO 'root'@'%' IDENTIFIED BY 'SUA_SENHA_AQUI';
+FLUSH PRIVILEGES;
+
+INSTR
+fi
+# ====== fim da alteração ======
 
 echo "[8/8] Instalando Apache2, PHP e phpMyAdmin"
 apt install -y apache2 php libapache2-mod-php php-mysql php-mbstring phpmyadmin
 
-# Detectar IP para ServerName
 SERVER_IP="$(detect_public_ip)"
 APACHE_CONF="/etc/apache2/apache2.conf"
 backup_file "$APACHE_CONF"
 
-# Adicionar/atualizar ServerName
 if grep -q "^ServerName" "$APACHE_CONF" 2>/dev/null; then
   sed -i "s/^ServerName.*/ServerName ${SERVER_IP}/" "$APACHE_CONF"
 else
-  # append at end
   echo -e "\n# Diretiva ServerName\nServerName ${SERVER_IP}\n" >> "$APACHE_CONF"
 fi
 
-# Ajustar DirectoryIndex no dir.conf
 DIR_CONF="/etc/apache2/mods-enabled/dir.conf"
 backup_file "$DIR_CONF"
 
@@ -176,10 +200,8 @@ cat > "$DIR_CONF" <<'DIRCONF'
 </IfModule>
 DIRCONF
 
-# Reiniciar Apache
 systemctl restart apache2 || true
 
-# Configurar firewalld e liberar portas 22,80,443,3306
 echo "Instalando e configurando firewalld (abrindo portas 22,80,443,3306)"
 apt install -y firewalld
 systemctl enable --now firewalld
@@ -190,17 +212,16 @@ firewall-cmd --zone=public --permanent --add-port=443/tcp
 firewall-cmd --zone=public --permanent --add-port=3306/tcp
 firewall-cmd --reload
 
-# (Opcional) regras iptables para 3306
 iptables -I INPUT -p tcp --dport 3306 -m conntrack --ctstate NEW,ESTABLISHED -j ACCEPT || true
 iptables -I OUTPUT -p tcp --sport 3306 -m conntrack --ctstate ESTABLISHED -j ACCEPT || true
 
-# Reiniciar MariaDB/Apache novamente para garantir aplicação das mudanças
 systemctl restart mariadb || systemctl restart mysql || true
 systemctl restart apache2 || true
 
 echo
 echo "==== Concluído ===="
-echo "MariaDB configurado para bind-address=0.0.0.0 e root@'%' criado com senha 'jjl3m47c'."
+echo "MariaDB configurado para bind-address=0.0.0.0."
+echo "Se criou root@'%' com senha, ela foi digitada interativamente (não está gravada neste arquivo)."
 echo "Apache ServerName definido como: ${SERVER_IP}"
 echo "Firewalld aberto nas portas: 22,80,443,3306 (zona public)."
 echo
