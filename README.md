@@ -1,59 +1,45 @@
 # setup-oracle
 
-Este repositório contém o script `setup_oracle.sh` para auxiliar na preparação/instalação relacionada ao Oracle.
+Script bash para provisionamento automatizado de servidor web em **Ubuntu 24.04** (Oracle Cloud Infrastructure). Instala e configura MariaDB, Apache e firewalld em um único passo.
 
-**Sobre**
-- **Arquivo:** `setup_oracle.sh` — script principal para realizar a configuração.
-- **Local:** `./setup_oracle.sh`
+## O que o script faz
 
-**Requisitos**
-- **Shell:** `bash` (Linux)
-- **Permissões:** acesso `sudo`/root quando necessário
-- **Dependências comuns:** `curl`, `wget`, `unzip` (dependendo do que o script precisa)
+1. `apt update && apt upgrade`
+2. Instala pacotes essenciais (`curl`, `gnupg`, `ca-certificates`, etc.)
+3. Instala e endurece o **MariaDB** (`mysql_secure_installation` não-interativo)
+4. Configura `bind-address = 0.0.0.0` no MariaDB (acesso remoto)
+5. Instala e configura o **Apache** com `ServerName` detectado automaticamente (IP público via metadados OCI ou `ifconfig.me`)
+6. Instala o **firewalld** e abre as portas `22`, `80`, `443`, `3306`
+7. Oferece criação opcional do usuário `root@'%'` no MariaDB (senha informada interativamente)
 
-**Instalação e uso**
-- **Tornar executável:**
+## Pré-requisitos
 
-```bash
-chmod +x setup_oracle.sh
-```
+- Ubuntu 24.04
+- Acesso `sudo` / root
+- Conexão com a internet (para download de pacotes)
 
-- **Executar (modo padrão):**
-
-```bash
-sudo ./setup_oracle.sh
-```
-
-- **Executar sem sudo (se o script suportar):**
-
-```bash
-./setup_oracle.sh
-```
-
-**Exemplos**
-- Execução simples:
+## Uso
 
 ```bash
 chmod +x setup_oracle.sh
 sudo ./setup_oracle.sh
 ```
 
-- Para depurar o script (modo verbo):
+Para depurar:
 
 ```bash
-bash -x ./setup_oracle.sh
+sudo bash -x ./setup_oracle.sh
 ```
 
-**Dicas de solução de problemas**
-- `Permission denied`: execute `chmod +x setup_oracle.sh` e tente novamente.
-- `Comando não encontrado`: instale a dependência faltante (ex.: `sudo apt install curl`).
-- Se a instalação falhar, rode em modo debug `bash -x ./setup_oracle.sh` para ver onde ocorre o erro.
+## Portas abertas pelo firewalld
 
-**Onde olhar no script**
-- Abra `setup_oracle.sh` para ver variáveis de ambiente exigidas, argumentos aceitos e passos de instalação.
+| Porta | Serviço |
+|---|---|
+| 22 | SSH |
+| 80 | HTTP |
+| 443 | HTTPS |
+| 3306 | MariaDB |
 
-**Licença**
-- MIT — sinta-se livre para copiar e adaptar. Inclua atribuição quando apropriado.
+## Autor
 
-**Contato / Manutenção**
-- Mantenha este README atualizado quando o `setup_oracle.sh` for alterado.
+Ronaldo Ramires — [LinkedIn](https://linkedin.com/in/ronaldoramires) · [ronaldoramires.xyz](https://ronaldoramires.xyz)
